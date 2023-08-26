@@ -34,7 +34,7 @@ def handle_client_connection(client_socket):
     # 接收客戶端傳送的檔名
     filename = client_socket.recv(1024).decode('utf-8')
     # 對檔名進行清理，確保它只包含合法字符
-    filename = sanitize_filename(filename)
+    filename = sanitize_filename(filename)       
     
     # 生成帶有時間戳的檔名
     timestamp = datetime.now().strftime('%Y%m%d_%H%M')
