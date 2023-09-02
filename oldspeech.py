@@ -58,11 +58,11 @@ def Voice_To_Text():
 
 #main
 #設定文字檔儲存路徑
-outfile='D:\Topic\VoiceToText\Voice.txt'
+outfile='D:\Topic\VoiceToText\testtext.txt'
 f1=open(outfile,'w', encoding='CP950')
 
 print('播放語音檔:')
-AUDIO_FILE_NAME = ("D:\Topic\VoiceToText\yating.wav")
+AUDIO_FILE_NAME = ("D:\Topic\VoiceToText\test.wav")
 Play_Voice(AUDIO_FILE_NAME)
 
 print('轉换語音檔成文字：')
