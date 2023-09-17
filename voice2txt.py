@@ -1,9 +1,9 @@
 import socket
 import re
-import pyaudio
-import wave
+import os
 import subprocess
-
+import firebase_admin
+from firebase_admin import credentials, storage
 import logging
 from threading import Thread, active_count
 
@@ -12,103 +12,117 @@ import speech_recognition as sr
 # 配置日志记录，设置日志级别为DEBUG，格式为'[级别] 消息'
 logging.basicConfig(level=logging.DEBUG, format='[%(levelname)s] %(message)s')
 
-def sanitize_filename(filename):
+def sanitize_input(input_str):
     # 使用正規表示式過濾掉不可見字符和特殊字符，只保留英數字、底線、句點和連字符
-    return re.sub(r'[^\w.-]', '', filename)
+    return re.sub(r'[^\w.-]', '', input_str)
 
-def audio_file_to_text(audio_file_name):
+def audio_file_to_text(wav_audio_file_path):
     # 使用SpeechRecognition程式庫將音頻文件轉換為文字
     r = sr.Recognizer()
-    with sr.AudioFile(audio_file_name) as source:
+    with sr.AudioFile(wav_audio_file_path) as source:
         r.adjust_for_ambient_noise(source, duration=0)
         audio = r.record(source)
     try:
         result = r.recognize_google(audio, language='zh-TW')
+        return result
     except sr.UnknownValueError:
         result = "無法翻譯"
+        return result
     except sr.RequestError as e:
         result = "翻譯錯誤：{0}".format(e)
-    return result
+        return result
+ # 添加一个标志，以确保只初始化一次
+firebase_initialized = False
+
+def initialize_firebase():
+    global firebase_initialized
+    if not firebase_initialized:
+        # 初始化 Firebase Admin SDK
+        cred = credentials.Certificate("D:\Topic\VoiceToText\serviceAccountKey.json")
+        firebase_admin.initialize_app(cred, {"storageBucket": "stroke-2015a.appspot.com"})
+        firebase_initialized = True   
 
 def handle_client_connection(client_socket):
-    try:# 接收客戶端傳送的檔名
-        filename = client_socket.recv(1024).decode('utf-8')
-         # 做文件名的错误处理和验证
-        if not filename.strip():
+    try:
+        # 接收客户端发送的文件名
+        info_string = client_socket.recv(1024).decode('utf-8')
+
+        # 做文件名的错误处理和验证
+        if not info_string.strip():
             logging.warning("接收到空白文件名")
             return
-        
-        filename = sanitize_filename(filename)  
-        if not filename:
-            logging.warning("無效的文件名")
-            return
-        # 對檔名進行清理，確保它只包含合法字符
-        filename = sanitize_filename(filename)       
-                
-        # # 生成帶有時間戳的檔名
-        # timestamp = datetime.now().strftime('%Y%m%d_%H%M')
-        # filename_with_timestamp = f"AUDIO_{timestamp}_{filename}.3gp"
 
-        # 存放音訊檔案的路徑
-        audio_file_path = "D:/Topic/VoiceToText/" + filename
+        # 分离信息字符串为 username、dateTime 和 filename
+        username, dateTime, filename = info_string.split('/')
+        username = sanitize_input(username)
+        dateTime = sanitize_input(dateTime)
+        filename = sanitize_input(filename)
+        
+        if not username or not dateTime or not filename:
+            logging.warning("无效的信息字符串")
+            return
+        
+       # 存放音频文件的路径
+        audio_dir = os.path.join("D:/Topic/VoiceToText", username, dateTime)
+        os.makedirs(audio_dir, exist_ok=True)  # 创建目录，如果目录不存在
+
+        audio_file_path = os.path.join(audio_dir, filename)
     
         with open(audio_file_path, "wb") as f:
             while True:
-                # 持續接收客戶端傳輸的數據並寫入檔案
+                # 持续接收客户端传输的数据并写入文件
                 data = client_socket.recv(1024)
                 if not data:
                     break
                 f.write(data)
-        logging.info(f"音訊檔案已儲存為 {filename}")
+        logging.info(f"音频文件已储存为 {filename}")
         
-         # 将 3GP 音频文件转换为 WAV 格式
-        wav_audio_file_path = audio_file_path.replace('.3gp', '.wav')
-        subprocess.run(['ffmpeg', '-i', audio_file_path, wav_audio_file_path])
+        # 將mp3轉成wav
+        if audio_file_path.endswith('.mp3'):
+            wav_audio_file_path = audio_file_path.replace('.mp3', '.wav')
+            subprocess.run(['ffmpeg', '-i', audio_file_path, wav_audio_file_path])
+            logging.info(f"音频文件已转换为 {wav_audio_file_path}")
+            audio_file_path = wav_audio_file_path
+            
+        # 检查并创建 wav 文件
+        if not os.path.isfile(wav_audio_file_path):
+            subprocess.run(['ffmpeg', '-i', audio_file_path, wav_audio_file_path])
+            logging.info(f"音频文件已转换为 {wav_audio_file_path}")
         
-        # 將音頻檔案轉換為文字
-        result = audio_file_to_text(audio_file_path)
-        logging.info(f"轉換後的文字內容：{result}")
+        # 将音频文件转换为文字
+        result = audio_file_to_text(wav_audio_file_path)
+        logging.info(f"转换后的文字内容：{result}")
         
-        # 播放音频文件
-        play_audio(audio_file_path)
+         # 将转换结果发送回客户端
+        client_socket.send(result.encode())
         
         # 将转换结果存储到文本文件中
-        store_result(result)
+        store_result(result, wav_audio_file_path, username, dateTime, filename)
         
     except Exception as e:
         logging.error(f"处理客户端连接时发生错误：{e}")
     finally:
-        # 关闭客户端连接
+        #關閉socket
         client_socket.close()
-    
-    # 傳送回應消息給客戶端
-    response = "音訊已接收、儲存並轉換為文字"
-    client_socket.send(response.encode())
-    client_socket.close()
-    
-# 添加播放音频的函数
-def play_audio(audio_file_path):
-    CHUNK = 1024
-    File = wave.open(audio_file_path, "rb")
-    p = pyaudio.PyAudio()
-    stream = p.open(format=p.get_format_from_width(File.getsampwidth()), 
-                    channels=File.getnchannels(), 
-                    rate=File.getframerate(), 
-                    output=True)
-    data = File.readframes(CHUNK)
-    while data:
-        stream.write(data)
-        data = File.readframes(CHUNK)
-    stream.stop_stream()
-    stream.close()
-    p.terminate()
 
-# 添加存储转换结果的函数
-def store_result(result):
-    outfile = 'D:/Topic/VoiceToText/Voiceresult.txt'
-    with open(outfile, 'a', encoding='CP950') as f:
-        f.write(result + '\n')
-    print('\n\n檔案'+outfile+'己存檔。')
+def store_result(result, wav_audio_file_path, username, dateTime, filename):
+    # 初始化 Firebase Admin SDK（确保只初始化一次）
+    initialize_firebase()
+    
+    bucket = storage.bucket() 
+    # 上传文本文件到 Firebase Storage
+    folder_path = f"text/{username}/{dateTime}/"
+
+    # 上传文本文件到文件夹中
+    file_name = f"{filename}.txt"
+    text_blob = bucket.blob(f"{folder_path}{file_name}")
+    text_blob.upload_from_string(result, content_type="text/plain")
+    
+    # 获取上传后的文件的公共 URL（可选）
+    text_blob.make_public()
+    public_url = text_blob.public_url
+
+    print(f"文本文件已上传至 Firebase Storage，公共 URL 为: {public_url}")
 
 def start_socket_server():
     # 建立socket伺服器，綁定地址並監聽連線
